@@ -1,5 +1,8 @@
 [English](README.md) | 中文 | [日本語](README.ja.md)
 
+> [!IMPORTANT]
+> **仅限非商业使用。** 固件包含 Emotion Ball 的眼睛轮廓数据，该数据只允许非商业使用。你可以出于个人、教学等非商业目的使用、修改和分享本项目，但不能出售本项目或运行它的硬件。详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md#emotion-ball-eye-ring-data-aora-bot-emotion-ball-community-license)。
+
 ![Groki Bot 像素风头图：CRT 复古电脑造型的桌面机器人，屏幕上是白色圆脸](docs/images/banner.png)
 <!-- demo-video
      演示视频后补。发布后把嵌入代码（iframe 或 video）放在本注释块下方。

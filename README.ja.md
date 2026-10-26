@@ -1,5 +1,8 @@
 [English](README.md) | [中文](README.zh-CN.md) | 日本語
 
+> [!IMPORTANT]
+> **非商用利用に限ります。** ファームウェアには、非商用利用のみ許諾されている Emotion Ball の目のリングデータが含まれています。個人・教育などの非商用目的での利用・改変・共有は可能ですが、本プロジェクトやそれを搭載したハードウェアを販売することはできません。詳しくは [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md#emotion-ball-eye-ring-data-aora-bot-emotion-ball-community-license) を参照してください。
+
 ![Groki Bot](docs/images/banner.png)
 <!-- demo-video
      Demo video to be added. After publishing, place the embed code (iframe or video) below this comment block.

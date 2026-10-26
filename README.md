@@ -1,5 +1,8 @@
 English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
+> [!IMPORTANT]
+> **Non-commercial use only.** The firmware includes eye-ring data from Emotion Ball, which is licensed for non-commercial use only. You may use, modify and share this project for personal, educational and other non-commercial purposes, but you may not sell it or hardware running it. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md#emotion-ball-eye-ring-data-aora-bot-emotion-ball-community-license).
+
 ![Groki Bot pixel-art banner: a desktop robot shaped like a retro CRT computer, with a round white face on the screen](docs/images/banner.png)
 <!-- demo-video
      Demo video to be added. After publishing, place the embed code (iframe or video) below this comment block.
