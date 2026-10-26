@@ -146,10 +146,65 @@ fn fill_ellipse(cx, cy, rx, ry, color)
 end
 
 ----------------------------------------------------------------------
+-- Listening ripple: 16 dots on a circle of radius r (dot radius d). The DSL
+-- has no trig, so the unit vectors are spelled out; small dots cost far less
+-- than filling and clearing a large ring every frame.
+----------------------------------------------------------------------
+fn arc_seg(cx, cy, r0, r1, c0, s0, c1, s1, color)
+  fill_triangle(cx + r0 * c0, cy + r0 * s0, cx + r1 * c0, cy + r1 * s0, cx + r0 * c1, cy + r0 * s1, color)
+  fill_triangle(cx + r1 * c0, cy + r1 * s0, cx + r0 * c1, cy + r0 * s1, cx + r1 * c1, cy + r1 * s1, color)
+end
+
+-- One ")" sound-wave arc spanning -36..36 degrees; side = 1 right, -1 left.
+fn sound_arc(cx, cy, r, th, side, color)
+  let r1 = r + th
+  arc_seg(cx, cy, r, r1, side * 0.809, -0.588, side * 0.891, -0.454, color)
+  arc_seg(cx, cy, r, r1, side * 0.891, -0.454, side * 0.951, -0.309, color)
+  arc_seg(cx, cy, r, r1, side * 0.951, -0.309, side * 0.988, -0.156, color)
+  arc_seg(cx, cy, r, r1, side * 0.988, -0.156, side * 1.0, 0, color)
+  arc_seg(cx, cy, r, r1, side * 1.0, 0, side * 0.988, 0.156, color)
+  arc_seg(cx, cy, r, r1, side * 0.988, 0.156, side * 0.951, 0.309, color)
+  arc_seg(cx, cy, r, r1, side * 0.951, 0.309, side * 0.891, 0.454, color)
+  arc_seg(cx, cy, r, r1, side * 0.891, 0.454, side * 0.809, 0.588, color)
+end
+
+----------------------------------------------------------------------
 -- Entry point. RGB565, white face on a black background:
 --   0x0000 = black background, 0xFFFF = white body, 0x0000 = black eyes.
 -- Eye geometry/motion lives in C++ (aora rings); this draws body + eyes.
 ----------------------------------------------------------------------
+
+----------------------------------------------------------------------
+-- Voice-error glyphs (ElevenLabs unreachable).
+----------------------------------------------------------------------
+fn thick_line(x0, y0, x1, y1, th, color)
+  let dx = x1 - x0
+  let dy = y1 - y0
+  let len = sqrt(dx * dx + dy * dy)
+  let nx = 0 - dy / len * th / 2
+  let ny = dx / len * th / 2
+  fill_triangle(x0 + nx, y0 + ny, x1 + nx, y1 + ny, x0 - nx, y0 - ny, color)
+  fill_triangle(x1 + nx, y1 + ny, x1 - nx, y1 - ny, x0 - nx, y0 - ny, color)
+end
+
+fn draw_x(x, y, s, th, color)
+  thick_line(x - s, y - s, x + s, y + s, th, color)
+  thick_line(x - s, y + s, x + s, y - s, th, color)
+end
+
+fn draw_bang(x, y, s, color)
+  fill_circle(x, y, s * 1.25, color)
+  fill_rect(x - s * 0.17, y - s * 0.8, s * 0.34, s * 1.0, 0xFFFF)
+  fill_circle(x, y + s * 0.6, s * 0.19, 0xFFFF)
+end
+
+fn draw_muted_speaker(x, y, s, color)
+  fill_rect(x - s, y - s * 0.4, s * 0.6, s * 0.8, 0xFFFF)
+  fill_triangle(x - s * 0.4, y - s * 0.4, x + s * 0.3, y - s, x + s * 0.3, y + s, 0xFFFF)
+  fill_triangle(x - s * 0.4, y - s * 0.4, x - s * 0.4, y + s * 0.4, x + s * 0.3, y + s, 0xFFFF)
+  thick_line(x - s * 1.2, y - s * 1.1, x + s * 1.0, y + s * 1.1, s * 0.3, color)
+end
+
 fn draw()
   let paper = 0x0000
   let body = 0xFFFF
@@ -244,6 +299,24 @@ fn draw()
   end
   let base_r = sz(100) * body_scale_mix * breath
 
+  -- Listening: thin cyan rim that breathes while waiting and thickens with
+  -- the user's voice; the body swells slightly as if taking the sound in.
+  let lw = 0
+  let lv = 0
+  if expr == LISTENING then
+    lw = b
+    lv = clamp(voice_level, 0, 1)
+    base_r = base_r * (1 + lv * 0.03 * lw)
+    let rb = (now_ms / 40) % 40
+    if rb > 20 then
+      rb = 40 - rb
+    end
+    fill_circle(cx, cy, base_r + (sz(2) + rb / 20 * sz(1.5) + lv * sz(6)) * lw, 0x07FF)
+  end
+
+  if expr == DIZZY then
+    body = 0xF800
+  end
   if talk > 0.05 then
     fill_ellipse(cx, cy, base_r * sx, base_r * sy, body)
   else
@@ -283,6 +356,40 @@ fn draw()
     end
   end
 
-  ring_eyes(eyes)
+  -- Listening ears: ")))" sound-wave arcs on both sides, in the strips of
+  -- screen the body leaves free. Silent: only the inner arc, dim. Speaking:
+  -- arcs light up from the inside out with loudness and drift outwards.
+  if lw > 0.3 then
+    let drift = ((now_ms % 500) / 500) * sz(4) * lv
+    let ak = 0
+    while ak < 3 do
+      let lit = clamp((lv - ak * 0.25) / 0.2, 0, 1)
+      let col = 0
+      if lit > 0.6 then
+        col = 0x07FF
+      elif lit > 0.05 then
+        col = 0x05F7
+      elif ak == 0 then
+        col = 0x03EF
+      end
+      if col > 0 then
+        let ar = base_r + sz(14) + ak * sz(15) + drift
+        sound_arc(cx, cy, ar, sz(4), 1, col)
+        sound_arc(cx, cy, ar, sz(4), -1, col)
+      end
+      ak = ak + 1
+    end
+  end
+
+  if expr == DIZZY then
+    let exl = (ring_l0x + ring_l12x + ring_l24x + ring_l36x) / 4
+    let eyl = (ring_l0y + ring_l12y + ring_l24y + ring_l36y) / 4
+    let exr = (ring_r0x + ring_r12x + ring_r24x + ring_r36x) / 4
+    let eyr = (ring_r0y + ring_r12y + ring_r24y + ring_r36y) / 4
+    draw_x(exl, eyl, sz(13), sz(7), eyes)
+    draw_x(exr, eyr, sz(13), sz(7), eyes)
+  else
+    ring_eyes(eyes)
+  end
   end_group()
 end
