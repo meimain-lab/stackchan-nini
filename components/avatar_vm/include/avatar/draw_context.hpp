@@ -41,6 +41,8 @@ struct DrawContext {
     float gaze_saccade_v{0.0f};
     float eye_open_ratio{1.0f};
     float mouth_open_ratio{0.0f};
+    // 0..1 loudness of the user's voice while listening (DSL var voice_level).
+    float voice_level{0.0f};
     Palette palette{kDefaultPalette};
     std::uint32_t rng_state{0xC0FFEEu};
     std::optional<std::string> balloon_text{};

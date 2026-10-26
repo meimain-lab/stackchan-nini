@@ -3,9 +3,12 @@
 
 #include "wifi_sta.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <utility>
 
 #include <esp_event.h>
 #include <esp_heap_caps.h>
@@ -77,6 +80,40 @@ void sta_retry_timer_cb(void*)
     esp_wifi_connect();
 }
 
+// Saved networks (primary first, then the fallback slots that have an SSID).
+// After kFailuresBeforeSwitch failed attempts on one network the station
+// moves on to the next, so the robot follows the user between home, office
+// and a phone hotspot without re-provisioning.
+struct SavedNetwork {
+    const std::string* ssid;
+    const std::string* password;
+};
+constexpr int kFailuresBeforeSwitch = 2;
+std::array<SavedNetwork, 3> g_networks{};
+int g_network_count = 0;
+int g_network_index = 0;
+int g_network_failures = 0;
+
+void apply_network(int index)
+{
+    wifi_config_t sta_cfg{};
+    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.ssid),
+                 g_networks[index].ssid->c_str(), sizeof(sta_cfg.sta.ssid) - 1);
+    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.password),
+                 g_networks[index].password->c_str(), sizeof(sta_cfg.sta.password) - 1);
+    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+}
+
+void note_sta_failure()
+{
+    if (g_network_count < 2 || ++g_network_failures < kFailuresBeforeSwitch) return;
+    g_network_failures = 0;
+    g_network_index = (g_network_index + 1) % g_network_count;
+    apply_network(g_network_index);
+    ESP_LOGW(kTag, "switching to saved network %d/%d: %s", g_network_index + 1, g_network_count,
+             g_networks[g_network_index].ssid->c_str());
+}
+
 void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
 {
     if (base == WIFI_EVENT) {
@@ -98,6 +135,7 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
                 }
             } else {
                 ESP_LOGW(kTag, "disconnected, retrying");
+                note_sta_failure();
                 esp_wifi_connect();
             }
         } else if (id == WIFI_EVENT_AP_STACONNECTED) {
@@ -120,6 +158,11 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const auto* event = static_cast<ip_event_got_ip_t*>(data);
         ESP_LOGI(kTag, "got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        g_network_failures = 0;
+        if (g_network_count > 0) {
+            ESP_LOGI(kTag, "connected to saved network %d/%d: %s", g_network_index + 1, g_network_count,
+                     g_networks[g_network_index].ssid->c_str());
+        }
         g_connected.store(true, std::memory_order_release);
         config::notify_wifi_connected(true);
 
@@ -220,19 +263,21 @@ void wifi_start(const config::DeviceConfig& cfg)
         ESP_ERROR_CHECK(esp_timer_create(&args, &g_sta_retry_timer));
     }
 
-    if (cfg.wifi_ssid.empty()) {
+    g_network_count = 0;
+    for (const auto& [ssid, password] : {std::pair{&cfg.wifi_ssid, &cfg.wifi_password},
+                                         std::pair{&cfg.wifi_ssid_2, &cfg.wifi_password_2},
+                                         std::pair{&cfg.wifi_ssid_3, &cfg.wifi_password_3}}) {
+        if (!ssid->empty()) g_networks[g_network_count++] = {ssid, password};
+    }
+    if (g_network_count == 0) {
         ESP_LOGI(kTag, "no SSID configured — Wi-Fi driver initialised but not started");
         return;
     }
-
-    wifi_config_t sta_cfg{};
-    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.ssid),
-                 cfg.wifi_ssid.c_str(), sizeof(sta_cfg.sta.ssid) - 1);
-    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.password),
-                 cfg.wifi_password.c_str(), sizeof(sta_cfg.sta.password) - 1);
+    g_network_index = 0;
+    g_network_failures = 0;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+    apply_network(0);
     ESP_ERROR_CHECK(esp_wifi_start());
     // IDF defaults to WIFI_PS_MIN_MODEM: the radio naps between DTIM beacons
     // and downlink frames queue at the AP for 20-90 ms at a time (measured
@@ -240,7 +285,8 @@ void wifi_start(const config::DeviceConfig& cfg)
     // TTS jitter buffer on a device that streams 60 ms audio frames. Desk
     // robot on USB power — keep the radio awake.
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    ESP_LOGI(kTag, "connecting to SSID: %s (power-save off)", cfg.wifi_ssid.c_str());
+    ESP_LOGI(kTag, "connecting to SSID: %s (power-save off, %d saved network%s)",
+             g_networks[0].ssid->c_str(), g_network_count, g_network_count == 1 ? "" : "s");
 }
 
 bool wifi_is_connected()

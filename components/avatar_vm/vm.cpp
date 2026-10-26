@@ -114,6 +114,7 @@ inline float read_var(Var v, const avatar::Canvas& canvas, const avatar::DrawCon
     case Var::CheekRadius: return t.cheek_radius;
     case Var::CheekOffX: return t.cheek_off_x;
     case Var::CheekOffY: return t.cheek_off_y;
+    case Var::VoiceLevel: return ctx.voice_level;
     default: {
         const auto id = static_cast<std::uint8_t>(v);
         const auto base = static_cast<std::uint8_t>(Var::RingBase);
@@ -208,7 +209,7 @@ tl::expected<void, VmError> Vm::run(const Bytecode& bc, avatar::Canvas& canvas,
         case Op::PushVar: {
             if (pc + 1 > code_size) return tl::unexpected(VmError::Truncated);
             const std::uint8_t id = code[pc++];
-            if (id >= static_cast<std::uint8_t>(Var::RingBase) + kRingVarCount) {
+            if (id > kLastVarId) {
                 return tl::unexpected(VmError::BadVarId);
             }
             auto r = push(read_var(static_cast<Var>(id), canvas, ctx, tuning, scale));

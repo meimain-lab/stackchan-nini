@@ -114,9 +114,13 @@ enum class Var : std::uint8_t {
     // l0x,l0y..l47x,l47y,r0x..r47y (screen coordinates, interpolated in C++ every frame). The data comes
     // from DrawContext::aora_ring; a null pointer reads 0.
     RingBase = 0x25,
+    // First id after the ring range (0x25 + 192): the user's live voice level
+    // while the robot listens (0..1, mic RMS, smoothed in conversation_task).
+    VoiceLevel = 0xE5,
 };
 
 inline constexpr std::uint8_t kRingVarCount = 192;
+inline constexpr std::uint8_t kLastVarId = static_cast<std::uint8_t>(Var::VoiceLevel);
 
 // Const table tag bytes.
 enum class ConstTag : std::uint8_t {

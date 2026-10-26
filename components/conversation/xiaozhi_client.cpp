@@ -55,7 +55,9 @@ constexpr UBaseType_t kSenderTaskPrio = 5;
 // libopus' CELT/SILK encode path is stack-hungry (large on-stack arrays); 8 KB
 // overflows the moment the first frame is encoded. PSRAM-backed, so generous.
 constexpr std::size_t kSenderTaskStack = 32768;
-constexpr BaseType_t kSenderTaskCore = 1;
+// Core 0: the Opus encoder starved the face renderer on core 1 (task_wdt
+// IDLE1 warnings, 4-6 fps) while core 0 sat idle.
+constexpr BaseType_t kSenderTaskCore = 0;
 
 // Audio tx ring. 40 ms PCM16 mono chunks (640 samples, 1280 B); 96 slots
 // ≈ 3.8 s of buffering before evictions.

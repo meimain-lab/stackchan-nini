@@ -36,6 +36,8 @@ public:
     void note_activity() noexcept;
     Expression resolve_expression(std::uint32_t now_ms) noexcept;
     void set_mouth_open(float ratio) noexcept;
+    // Live loudness of the user's voice while listening, 0..1 (DSL voice_level).
+    void set_voice_level(float level) noexcept;
     void set_gaze(float horizontal, float vertical) noexcept;
     void set_palette(const Palette& palette) noexcept;
     // Rebuild the face layout from user tuning (eye/eyebrow/mouth geometry) and

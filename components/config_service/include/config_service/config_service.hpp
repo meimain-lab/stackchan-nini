@@ -111,6 +111,12 @@ static_assert(static_cast<int>(LipSyncMode::Brightness) == 0 &&
 struct DeviceConfig {
     std::string wifi_ssid;
     std::string wifi_password;
+    // Fallback networks tried in order when the primary one is unreachable
+    // (home / office / phone hotspot). Empty SSID = slot unused.
+    std::string wifi_ssid_2;
+    std::string wifi_password_2;
+    std::string wifi_ssid_3;
+    std::string wifi_password_3;
     std::string openai_api_key;
     std::string gemini_api_key;
     // XiaoZhi AI server: full WebSocket endpoint (ws://<host>:8000/xiaozhi/v1/)

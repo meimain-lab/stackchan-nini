@@ -394,6 +394,34 @@ int main() {
         CHECK(!rr.ran && rr.ran.error() == VmError::BadConstId);
     }
 
+    // --- voice_level (first id after the ring range) reads DrawContext ----
+    {
+        BytecodeBuilder b;
+        b.code(PUSH_VAR);
+        b.code(static_cast<std::uint8_t>(Var::VoiceLevel));
+        b.code(PUSH_I8);
+        b.code(20);
+        b.code(MUL);
+        b.code(PUSH_I8);
+        b.code(1);
+        b.code(PUSH_I8);
+        b.code(1);
+        b.code(PUSH_I8);
+        b.code(3);
+        b.code(FILL_CIRCLE);
+        b.code(RET);
+        b.add_fn(0, 0, 0);
+
+        stackchan::avatar::DrawContext ctx;
+        ctx.voice_level = 0.5f;
+        auto rr = run_program(b.build(0), ctx);
+        CHECK(rr.ran.has_value());
+        CHECK(rr.canvas.ops.size() == 1);
+        if (rr.canvas.ops.size() == 1) {
+            CHECK(rr.canvas.ops[0].a == 10); // 0.5 * 20
+        }
+    }
+
     // --- bad var id ------------------------------------------------------
     {
         BytecodeBuilder b;

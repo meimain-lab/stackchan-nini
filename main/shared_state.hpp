@@ -76,6 +76,9 @@ public:
     // --- Avatar face (render_task reads every frame) -----------------------
     struct Face {
         std::atomic<float> mouth_open{0.0f};
+        // User's voice loudness while listening (0..1), drives the listening
+        // ripple in the face DSL. Written by conversation_task::service_mic.
+        std::atomic<float> voice_level{0.0f};
         // Conversation mood (LLM / MCP / button). Not the live face: the
         // expression controller resolves overlay + voice + this + idle decay.
         std::atomic<int> expression{static_cast<int>(stackchan::avatar::Expression::Neutral)};

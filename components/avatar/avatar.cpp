@@ -190,6 +190,10 @@ void Avatar::set_mouth_open(float ratio) noexcept {
     impl_->context().mouth_open_ratio = ratio;
 }
 
+void Avatar::set_voice_level(float level) noexcept {
+    impl_->context().voice_level = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
+}
+
 void Avatar::set_gaze(float horizontal, float vertical) noexcept {
     impl_->context().gaze_horizontal = horizontal;
     impl_->context().gaze_vertical = vertical;

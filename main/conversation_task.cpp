@@ -86,10 +86,15 @@ constexpr std::uint32_t kThinkingFaceMs = 12000;
 
 // Recover from a stuck "Speaking" (assistant playback drained but the
 // generationComplete / interrupted / turnComplete event never arrived,
-// so finish_speaking() can't fire on its own). Long enough to cover the
-// worst legitimate reply length we've seen, short enough to unstick the
-// avatar inside a single user-noticeable pause. See GitHub issue #2.
-constexpr std::uint32_t kSpeakingTimeoutMs = 30000;
+// so finish_speaking() can't fire on its own). See GitHub issue #2.
+// This is a stall timeout, not a cap on reply length: it only counts while
+// every received sample has been queued, the speaker is idle and no new
+// audio has arrived, so long replies play to the end.
+constexpr std::uint32_t kSpeakingStallTimeoutMs = 20000;
+// Once this much reply audio has been handed to the speaker, drop it from
+// the front of assistant_pcm_ so a long reply doesn't keep growing the
+// PSRAM buffer (60 s at 24 kHz is ~3 MB).
+constexpr std::uint32_t kPcmTrimAfterMs = 2000;
 constexpr std::uint32_t kReconnectBackoffBaseMs = 500;
 constexpr std::uint32_t kReconnectBackoffCapMs = 30u * 1000u;
 
@@ -654,14 +659,17 @@ private:
             }
             break;
         case Local::Speaking:
-            // Belt-and-braces timeout: if the assistant has been "speaking"
-            // for longer than any realistic reply, force the same path
+            // Belt-and-braces timeout: if playback has drained and nothing
+            // has moved for kSpeakingStallTimeoutMs, force the same path
             // finish_speaking() would have taken once audio_complete_
             // flipped. Otherwise a missed generationComplete (e.g. Gemini
             // Live `interrupted` without the fall-through) leaves us stuck
             // here forever with mouth_open frozen at 0. See issue #2.
-            if (now_ms() - playback_start_ms_ > kSpeakingTimeoutMs) {
-                ESP_LOGW(kTag, "speaking timed out (%u ms), forcing finish",
+            if (!audio_complete_ && seg_pos_ >= assistant_pcm_.size() &&
+                M5.Speaker.isPlaying(kSpeakerChannel) == 0 &&
+                now_ms() - last_audio_progress_ms_ > kSpeakingStallTimeoutMs) {
+                ESP_LOGW(kTag, "speaking timed out (stalled %u ms, %u ms total), forcing finish",
+                         static_cast<unsigned>(now_ms() - last_audio_progress_ms_),
                          static_cast<unsigned>(now_ms() - playback_start_ms_));
                 finish_speaking();
             } else {
@@ -710,6 +718,7 @@ private:
                                /*repeat=*/1, kSpeakerChannel, /*stop_current_sound=*/false);
             seg_pos_ += n;
             seg_next_ = (seg_next_ + 1) % kSegmentBuffers;
+            last_audio_progress_ms_ = now_ms();
             // Account for every chunk whose tail is now queued. A single
             // playRaw can flush multiple chunks if they arrived faster than
             // service_playback could drain them, hence the while-loop here.
@@ -721,6 +730,7 @@ private:
             }
         }
 
+        trim_played_pcm();
         update_mouth();
 
         // Done only once every chunk has arrived, every sample has been queued,
@@ -730,6 +740,23 @@ private:
             finish_speaking();
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    // Drop already-queued samples from the front of assistant_pcm_, keeping
+    // the last mouth-envelope window so update_mouth() still has data. Every
+    // pending chunk ends past seg_pos_ (the rest were popped above), so its
+    // offset stays positive after the shift.
+    void trim_played_pcm()
+    {
+        const std::size_t window = speaker_sample_rate_ * kEnvelopeStepMs / 1000u;
+        if (seg_pos_ < speaker_sample_rate_ * kPcmTrimAfterMs / 1000u) return;
+        const std::size_t drop = seg_pos_ - window;
+        assistant_pcm_.erase(assistant_pcm_.begin(), assistant_pcm_.begin() + static_cast<std::ptrdiff_t>(drop));
+        seg_pos_ -= drop;
+        pcm_trimmed_samples_ += drop;
+        for (auto& chunk : pending_chunks_) {
+            chunk.end_sample_offset -= drop;
         }
     }
 
@@ -745,10 +772,31 @@ private:
 
     // Double-buffered mic streaming. M5.Mic keeps a 2-deep queue; when one
     // slot frees, push that chunk upstream and re-queue it.
+    // Listening ripple: smoothed loudness of the mic chunk just captured, for
+    // the face DSL's voice_level. Fast attack so the halo jumps when you speak,
+    // slow release so it does not flicker between syllables.
+    void update_voice_level(std::span<const std::int16_t> pcm)
+    {
+        if (pcm.empty()) return;
+        std::int64_t sum = 0;
+        for (const std::int16_t sample : pcm) {
+            sum += static_cast<std::int32_t>(sample) * sample;
+        }
+        const float rms = std::sqrt(static_cast<float>(sum) / static_cast<float>(pcm.size()));
+        // CoreS3 mic: room noise sits around 100-200 RMS, normal speech 800-4000.
+        constexpr float kNoiseFloor = 150.0f;
+        constexpr float kFullScale = 3500.0f;
+        const float level = std::sqrt(std::clamp((rms - kNoiseFloor) / kFullScale, 0.0f, 1.0f));
+        const float prev = state_.face.voice_level.load(std::memory_order_relaxed);
+        const float next = level > prev ? level : prev * 0.85f + level * 0.15f;
+        state_.face.voice_level.store(next, std::memory_order_relaxed);
+    }
+
     void service_mic()
     {
         if (M5.Mic.isRecording() < 2) {
             const auto& buf = mic_buf_[mic_read_];
+            update_voice_level(std::span<const std::int16_t>{buf.data(), buf.size()});
             (void)client_->push_audio(std::span<const std::int16_t>{buf.data(), buf.size()});
             M5.Mic.record(mic_buf_[mic_read_].data(), mic_buf_[mic_read_].size(), mic_sample_rate_, /*stereo=*/false);
             mic_read_ ^= 1;
@@ -788,11 +836,14 @@ private:
     // shorter than the jitter buffer) — assistant_pcm_ may still be growing.
     void start_speaking()
     {
+        state_.face.voice_level.store(0.0f, std::memory_order_relaxed);
         M5.Mic.end();
         vTaskDelay(kI2sSettle);
         seg_pos_ = 0;
         seg_next_ = 0;
+        pcm_trimmed_samples_ = 0;
         playback_start_ms_ = now_ms();
+        last_audio_progress_ms_ = playback_start_ms_;
         playback_start_us_ = now_us();
         set_local(Local::Speaking);
         ESP_LOGI(kTag, "speaking (streaming)");
@@ -847,7 +898,8 @@ private:
     {
         const auto count = recv_to_queued_ms_.count;
         const auto pcm_lag_max = pcm_lag_samples_.max();
-        // Effective dispatch rate: seg_pos_ counts samples handed to playRaw,
+        // Effective dispatch rate: pcm_trimmed_samples_ + seg_pos_ counts
+        // samples handed to playRaw (seg_pos_ alone restarts after a trim),
         // which is queue-bound to <= 2 segments behind actual DMA output.
         // Over a turn >>341 ms (typical), the playRaw rate ≈ the physical
         // playback rate. If this comes out materially below speaker_sample_rate_
@@ -857,7 +909,7 @@ private:
                                             ? (now_us() - playback_start_us_)
                                             : 0;
         const double played_sps = elapsed_us > 0
-                                      ? static_cast<double>(seg_pos_) * 1.0e6 / static_cast<double>(elapsed_us)
+                                      ? static_cast<double>(pcm_trimmed_samples_ + seg_pos_) * 1.0e6 / static_cast<double>(elapsed_us)
                                       : 0.0;
         ESP_LOGI(kTag,
                  "metrics(play): chunks=%u  recv_lag_us avg=%.0f min=%.0f max=%.0f  "
@@ -989,6 +1041,7 @@ private:
                 }
                 assistant_pcm_.insert(assistant_pcm_.end(), ev.audio->begin(), ev.audio->end());
                 pending_chunks_.push_back({assistant_pcm_.size(), recv});
+                last_audio_progress_ms_ = now_ms();
                 // Streaming: start playback as soon as the jitter buffer fills,
                 // rather than waiting for the whole reply.
                 if (local_ == Local::Thinking && assistant_pcm_.size() >= jitter_buffer_samples_) {
@@ -1302,11 +1355,13 @@ private:
     std::array<std::vector<std::int16_t>, 2> mic_buf_{};
     int mic_read_{0};
 
-    std::vector<std::int16_t> assistant_pcm_;          // reply audio, in PSRAM (grows while streaming)
+    std::vector<std::int16_t> assistant_pcm_;          // unplayed reply audio, in PSRAM (played front is trimmed)
     bool audio_complete_{false};                       // every AssistantAudioChunk has arrived
     std::array<std::int16_t*, kSegmentBuffers> seg_buf_{}; // internal-RAM playback ring
     std::size_t seg_pos_{0};                           // next sample in assistant_pcm_ to play
     std::size_t seg_next_{0};                          // next ring slot to write
+    std::size_t pcm_trimmed_samples_{0};               // samples already dropped from the front of assistant_pcm_
+    std::uint32_t last_audio_progress_ms_{0};          // last chunk arrival or playRaw, for the stall timeout
     std::uint32_t playback_start_ms_{0};
     std::int64_t playback_start_us_{0};
     std::string assistant_text_;
@@ -1324,7 +1379,7 @@ private:
     // chunk has been handed to M5.Speaker.playRaw — we measure recv→queued
     // latency for each chunk this way and pop the entry off pending_.
     struct PendingChunk {
-        std::size_t end_sample_offset; // assistant_pcm_.size() after append
+        std::size_t end_sample_offset; // assistant_pcm_.size() after append (shifted on trim)
         std::int64_t recv_us;          // now_us() when we got the AssistantAudioChunk event
     };
     std::deque<PendingChunk> pending_chunks_;

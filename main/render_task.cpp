@@ -226,6 +226,7 @@ void render_task_entry(void* arg) {
         }
         const float mouth_open = args.state->face.mouth_open.load(std::memory_order_relaxed);
         avatar.set_mouth_open(mouth_open);
+        avatar.set_voice_level(args.state->face.voice_level.load(std::memory_order_relaxed));
         avatar.set_gaze(args.state->face.gaze_target_h.load(std::memory_order_relaxed),
                         args.state->face.gaze_target_v.load(std::memory_order_relaxed));
 

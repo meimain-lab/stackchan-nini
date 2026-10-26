@@ -97,7 +97,10 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # ===== [ASR Phase 0] esp-sr WakeNet + AFE 実機 RAM 検証 (一時) =====
 # camera を切って内部 RAM を空け、日本語ウェイクワード「こんにちはESP」で
 # AFE+WakeNet が cores3 に載るか実測する。確定後は cores3-asr variant へ。
-CONFIG_STACKCHAN_ASR_ENABLED=y
+# Stack-chan Rebirth: on-device ASR off. The wake word runs on the Mac gateway
+# (sherpa-onnx), and esp-sr held ~42 KiB of static internal RAM even with
+# asr=0, which starved httpd_start in XiaoZhi mode (ESP_ERR_HTTPD_TASK).
+CONFIG_STACKCHAN_ASR_ENABLED=n
 CONFIG_MODEL_IN_FLASH=y
 CONFIG_SR_WN_WN9L_JA_KONNICHIHAESP_TTS3=y
 CONFIG_SR_MN_CN_NONE=y
