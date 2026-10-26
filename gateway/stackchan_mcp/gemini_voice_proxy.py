@@ -38,6 +38,8 @@ from .device_emotion import (
     DEAD_LED_RGB,
     IDLE_EMOTION,
     LISTENING_EMOTION,
+    VOICE_ERROR_EMOTION,
+    VOICE_ERROR_FACE,
     WAKE_CONFIRM_EMOTION,
     face_to_device_emotion,
 )
@@ -129,6 +131,8 @@ class GeminiVoiceProxy:
     _ready_event: asyncio.Event = field(default_factory=asyncio.Event)
     _stopped: bool = False
     _reported_dead: bool = False
+    # TTS could not be reached; the red x-eyes face stays up until speech works or a wake.
+    _voice_error: bool = False
     # Firmware applies tts.start on its main task. A tiny guard delay keeps the
     # first binary Opus frame from racing in while the device is still Listening.
     device_tts_start_delay_s: float = field(
@@ -370,6 +374,8 @@ class GeminiVoiceProxy:
             set_face_tracking=self.set_face_tracking,
             debug_status=self._status,
         )
+        if hasattr(self._bridge, "on_voice_error"):
+            self._bridge.on_voice_error = self._handle_voice_error
         try:
             await self._bridge.start()
         except Exception as exc:
@@ -594,10 +600,83 @@ class GeminiVoiceProxy:
             except Exception as exc:
                 logger.warning("manual VAD activity_end failed: %s", exc)
 
+    def _listen_mode(self) -> str:
+        from .console_settings import get_console_settings  # noqa: PLC0415
+
+        return get_console_settings().get("listen_mode")
+
+    async def _on_woke(self, bridge: Any) -> None:
+        """Wake-up feedback: listening light, confirm face, chime."""
+        self._reported_dead = False
+        self._voice_error = False
+        await self._signal_manual_vad_start(bridge)
+        await self._set_leds_safe(*LISTENING_LED_RGB)
+        await self._send_device_emotion_safe(WAKE_CONFIRM_EMOTION)
+        if self.wake_confirm_hold_s > 0:
+            await asyncio.sleep(self.wake_confirm_hold_s)
+        await self._send_device_emotion_safe(LISTENING_EMOTION)
+        self._signal_wake_chime()
+
+    async def _on_wake_closed(self, bridge: Any) -> None:
+        await self._signal_manual_vad_end(bridge)
+        if self._voice_error:
+            await self._set_leds_safe(*DEAD_LED_RGB)
+            await self._send_device_emotion_safe(VOICE_ERROR_EMOTION)
+        elif not self._tts_active:
+            await self._set_leds_safe(0, 0, 0)
+            await self._send_device_emotion_safe(IDLE_EMOTION)
+        clear_context = getattr(bridge, "clear_conversation_context", None)
+        if callable(clear_context):
+            result = clear_context()
+            if inspect.isawaitable(result):
+                await result
+
+    async def wake_now(self) -> bool:
+        """Console "wake now": open the listening window as if the keyword was heard."""
+        bridge = self._bridge
+        if bridge is None or not self.connected:
+            return False
+        gate = self._maybe_rebuild_wake_gate()
+        if gate is not None and gate.force_wake():
+            self._status.on_wake_woke()
+        await self._on_woke(bridge)
+        return True
+
+    async def close_listening(self) -> bool:
+        """Close an open listening window (mode switched to off / always)."""
+        gate = self._wake_gate
+        bridge = self._bridge
+        if gate is None or bridge is None or not gate.close():
+            return False
+        self._status.on_wake_closed()
+        await self._on_wake_closed(bridge)
+        return True
+
+    def apply_console_settings(self, changed: dict[str, Any]) -> None:
+        """Runtime-apply console changes that live on the wake gate."""
+        if {"kws_threshold", "kws_score"} & changed.keys():
+            # Rebuilt with the new sensitivity on the next audio frame.
+            self._wake_gate = None
+            self._wake_gate_failures = 0
+            self._wake_gate_permanently_failed = False
+            self._wake_gate_next_rebuild_at = 0.0
+        if "wake_idle_s" in changed and self._wake_gate is not None:
+            self._wake_gate.idle_s = float(changed["wake_idle_s"])
+        if changed.get("listen_mode") in ("off", "always"):
+            asyncio.get_running_loop().create_task(self.close_listening())
+
     async def _forward_gated_device_pcm(self, pcm: bytes) -> None:
         """Apply the wake gate before forwarding decoded device PCM to Gemini."""
         bridge = self._bridge
         if bridge is None:
+            return
+        mode = self._listen_mode()
+        if mode == "off":
+            # Console "off": not listening at all, not even for the wake word.
+            return
+        if mode == "always":
+            # Console "always awake": every frame goes to speech recognition.
+            await bridge.send_audio(pcm)
             return
         gate = self._maybe_rebuild_wake_gate()
         if gate is None:
@@ -615,26 +694,23 @@ class GeminiVoiceProxy:
         if decision.woke:
             self._status.on_wake_woke()
         if decision.closed:
-            await self._signal_manual_vad_end(bridge)
-            if not self._tts_active:
-                await self._set_leds_safe(0, 0, 0)
-                await self._send_device_emotion_safe(IDLE_EMOTION)
-            clear_context = getattr(bridge, "clear_conversation_context", None)
-            if callable(clear_context):
-                result = clear_context()
-                if inspect.isawaitable(result):
-                    await result
+            await self._on_wake_closed(bridge)
         if decision.woke:
-            self._reported_dead = False
-            await self._signal_manual_vad_start(bridge)
-            await self._set_leds_safe(*LISTENING_LED_RGB)
-            await self._send_device_emotion_safe(WAKE_CONFIRM_EMOTION)
-            if self.wake_confirm_hold_s > 0:
-                await asyncio.sleep(self.wake_confirm_hold_s)
-            await self._send_device_emotion_safe(LISTENING_EMOTION)
-            self._signal_wake_chime()
+            await self._on_woke(bridge)
         for chunk in decision.forward_pcm:
             await bridge.send_audio(chunk)
+
+    async def _handle_voice_error(self, failed: bool) -> None:
+        """Voice output failed (or works again): show it on the face, never silently."""
+        if failed == self._voice_error:
+            return
+        self._voice_error = failed
+        if not failed:
+            logger.info("voice output works again; clearing the voice-error face")
+            return
+        logger.warning("voice output unavailable; showing the voice-error face")
+        await self._set_leds_safe(*DEAD_LED_RGB)
+        await self._send_device_emotion_safe(VOICE_ERROR_EMOTION)
 
     async def _handle_session_dead(self) -> None:
         """Session reconnect exceeded the audio-cache TTL: close listening and report that the session could not be resumed."""
@@ -1295,7 +1371,7 @@ class GeminiVoiceProxy:
             self._status.on_tts_state(False)
             self._prebuffer_satisfied = False
             self._pcm_prebuffer.clear()
-            self._signal_speaking_avatar("idle")
+            self._signal_speaking_avatar(self._post_tts_face())
             self._signal_speaking_leds(*self._post_tts_led_rgb())
             self._clear_turn_emotion_face()
 
@@ -1334,8 +1410,17 @@ class GeminiVoiceProxy:
             self._signal_speaking_leds(*self._post_tts_led_rgb())
         self._clear_turn_emotion_face()
 
+    def _post_tts_face(self) -> str:
+        """Back to the listening face if the wake window is still open."""
+        if self._voice_error:
+            return VOICE_ERROR_FACE
+        gate = self._wake_gate
+        if not self._reported_dead and gate is not None and gate.is_listening:
+            return "listening"
+        return "idle"
+
     def _post_tts_led_rgb(self) -> tuple[int, int, int]:
-        if self._reported_dead:
+        if self._reported_dead or self._voice_error:
             return DEAD_LED_RGB
         gate = self._wake_gate
         if gate is not None and gate.is_listening:

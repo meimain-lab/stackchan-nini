@@ -127,7 +127,10 @@ class SherpaOnnxKeywordSpotter:
         self._decoder = _find_onnx(self._model_dir, "decoder")
         self._joiner = _find_onnx(self._model_dir, "joiner")
         keywords_file = self._ensure_keywords_file()
-        self._stream_keyword = "" if keywords_file.name == "stackchan_keywords.txt" else keyword
+        # sherpa-onnx separates per-stream keywords with "/".
+        self._stream_keyword = (
+            "" if keywords_file.name == "stackchan_keywords.txt" else keyword.replace("|", "/")
+        )
         try:
             self._spotter = sherpa_onnx.KeywordSpotter(
                 tokens=str(self._tokens),
@@ -275,6 +278,19 @@ class WakeGate:
             self._last_voice_at = now
         return WakeGateResult(forward_pcm=(pcm_16khz,), closed=closed)
 
+    def force_wake(self) -> bool:
+        """Open the listening window without the keyword (console "wake now")."""
+        if not self.available:
+            return False
+        now = self.clock()
+        self.state = WakeGateState.LISTENING
+        self._last_voice_at = now
+        self._opened_at = now
+        self._listening_window_anchor = now
+        # The pre-roll is old room audio, not part of what the user is about to say.
+        self._clear_preroll()
+        return True
+
     def close(self) -> bool:
         """Go back to DORMANT and drop the buffered conversation audio."""
         was_listening = self.is_listening
@@ -420,20 +436,24 @@ def create_wake_gate_from_env(
     if _env_disabled("STACKCHAN_WAKE_WORD"):
         logger.info("wake word gate disabled by STACKCHAN_WAKE_WORD=0")
         return None
+    # Console settings default to the same env values, and win once edited.
+    from .console_settings import get_console_settings  # noqa: PLC0415
+
+    settings = get_console_settings()
     try:
         spotter = kws or SherpaOnnxKeywordSpotter(
             model_dir=_model_dir_from_env(),
             keyword=_keyword_from_env(),
             phrase=_phrase_from_env(),
-            keywords_score=_float_env("STACKCHAN_KWS_SCORE", 7.0),
-            keywords_threshold=_float_env("STACKCHAN_KWS_THRESHOLD", 0.05),
+            keywords_score=float(settings.get("kws_score")),
+            keywords_threshold=float(settings.get("kws_threshold")),
         )
     except WakeWordUnavailable as exc:
         logger.warning("wake word gate unavailable; passing device audio through: %s", exc)
         return None
     return WakeGate(
         kws=spotter,
-        idle_s=_float_env("STACKCHAN_WAKE_IDLE_S", DEFAULT_WAKE_IDLE_S),
+        idle_s=float(settings.get("wake_idle_s")),
         max_listening_s=_float_env(
             "STACKCHAN_WAKE_MAX_LISTENING_S",
             DEFAULT_WAKE_MAX_LISTENING_S,
@@ -468,14 +488,19 @@ def model_download_commands(target_dir: str | Path | None = None) -> str:
 
 
 def keywords_file_body(keyword: str) -> str:
-    """Keywords file content: the configured keyword, plus its vowel variants for a built-in wake word."""
+    """Keywords file content: the configured keyword, plus its vowel variants for a built-in wake word.
+
+    A custom keyword may list pronunciation variants separated by "|", e.g.
+    "D IY1 F AO1 R S IY1 @d4c|D IY1 F AO1 S IY1 @d4c"; each becomes its own line.
+    """
     wanted = keyword.strip()
     variants: tuple[str, ...] = ()
     if wanted == WAKE_KEYWORD:
         variants = WAKE_KEYWORD_VARIANTS
     elif wanted == HEY_GROKI_WAKE_KEYWORD:
         variants = HEY_GROKI_WAKE_KEYWORD_VARIANTS
-    return "".join(f"{line}\n" for line in (wanted, *variants))
+    lines = [part.strip() for part in wanted.split("|") if part.strip()]
+    return "".join(f"{line}\n" for line in (*lines, *variants))
 
 
 def _looks_like_kws_dir(path: Path) -> bool:

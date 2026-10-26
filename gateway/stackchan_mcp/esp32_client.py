@@ -22,6 +22,7 @@ from websockets.asyncio.server import ServerConnection
 from .audio_stream import SpeakResult, handle_audio_frame, speak_text
 from .cloud_proxy import CloudConnectionInfo, CloudProxy
 from .debug_status import DebugStatus, get_debug_status
+from .device_event_log import get_device_event_log, logged_sender
 from .protocol import HelloResponse, make_mcp_message, parse_jsonrpc_response
 
 logger = logging.getLogger(__name__)
@@ -255,6 +256,7 @@ class ESP32Connection:
         """
         try:
             await self._ws.send(payload)
+            get_device_event_log().record(payload)
         except (
             websockets.exceptions.ConnectionClosed,
             OSError,
@@ -527,7 +529,7 @@ class ESP32Manager:
 
                     if cloud_proxy is not None:
                         cloud_info = CloudConnectionInfo.from_headers(request_headers)
-                        await cloud_proxy.start(cloud_info, data, ws.send)
+                        await cloud_proxy.start(cloud_info, data, logged_sender(ws.send))
 
                     # Send hello response only after the cloud socket has had a
                     # chance to connect and receive the ESP32 hello.  The ESP32
@@ -548,7 +550,10 @@ class ESP32Manager:
                             self._debug_status.on_tts_state(False, source="device")
                             self._debug_status.on_tts_state(False, source="local")
                         self._connection = connection
-                        self._debug_status.on_device_connected(device_id)
+                        peer = getattr(ws, "remote_address", None)
+                        self._debug_status.on_device_connected(
+                            device_id, ip=peer[0] if isinstance(peer, (tuple, list)) and peer else None
+                        )
 
                     if mcp_supported:
                         # Start initialization as a separate task so the read

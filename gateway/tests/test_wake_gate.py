@@ -574,3 +574,10 @@ def test_custom_wake_keyword_is_written_alone(monkeypatch) -> None:
     from stackchan_mcp.wake_gate import keywords_file_body
 
     assert keywords_file_body("HH EH1 L OW0 @hello") == "HH EH1 L OW0 @hello\n"
+
+
+def test_custom_wake_keyword_variants_are_split_into_lines() -> None:
+    from stackchan_mcp.wake_gate import keywords_file_body
+
+    body = keywords_file_body(" D IY1 F AO1 R S IY1 @d4c | D IY1 F AO1 S IY1 @d4c |")
+    assert body == "D IY1 F AO1 R S IY1 @d4c\nD IY1 F AO1 S IY1 @d4c\n"

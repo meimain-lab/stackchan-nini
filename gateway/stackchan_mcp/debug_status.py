@@ -84,6 +84,7 @@ class DebugStatus:
     # ---- device (ESP32 WebSocket connection)----
     device_connected_flag: bool = False
     device_id: str | None = None
+    device_ip: str | None = None
     device_connected_since: float | None = None
     device_last_disconnect_at: float | None = None
     device_disconnect_count: int = 0
@@ -138,9 +139,10 @@ class DebugStatus:
 
     # ---- device events ----
 
-    def on_device_connected(self, device_id: str | None = None) -> None:
+    def on_device_connected(self, device_id: str | None = None, ip: str | None = None) -> None:
         self.device_connected_flag = True
         self.device_id = device_id
+        self.device_ip = ip
         self.device_connected_since = self.clock()
 
     def on_device_disconnected(self) -> None:
@@ -311,6 +313,8 @@ class DebugStatus:
             "device": {
                 "connected": self.device_connected_flag,
                 "device_id": self.device_id,
+                # Peer address of the device WebSocket: its LAN IP on the current network.
+                "ip": self.device_ip,
                 "connected_since": self.device_connected_since,
                 "last_disconnect_at": self.device_last_disconnect_at,
                 "disconnect_count": self.device_disconnect_count,

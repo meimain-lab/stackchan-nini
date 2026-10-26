@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-LISTENING_EMOTION = "neutral"
+# Firmware maps "listening" to Expression::Listening (halo + sound-wave arcs).
+LISTENING_EMOTION = "listening"
 WAKE_CONFIRM_EMOTION = "winking"
 IDLE_EMOTION = "neutral"
 DEAD_LED_RGB = (255, 0, 0)
+# Expression::Dizzy is reserved for "voice output is broken" (red face, x eyes);
+# the persona moods never map onto it.
+VOICE_ERROR_EMOTION = "dizzy"
+VOICE_ERROR_FACE = "voice_error"
 
 SUPPORTED_DEVICE_EMOTIONS = frozenset(
     {
         "neutral",
+        "listening",
         "happy",
         "sad",
         "angry",
@@ -31,12 +37,14 @@ SUPPORTED_DEVICE_EMOTIONS = frozenset(
         "relaxed",
         "cool",
         "confident",
+        VOICE_ERROR_EMOTION,
     }
 )
 
 FACE_TO_DEVICE_EMOTION = {
     "idle": IDLE_EMOTION,
     "neutral": IDLE_EMOTION,
+    "listening": LISTENING_EMOTION,
     "happy": "happy",
     "working_typing": "thinking",
     "juggling": "happy",
@@ -49,6 +57,7 @@ FACE_TO_DEVICE_EMOTION = {
     "thinking": "thinking",
     "doubt": "doubt",
     "winking": "winking",
+    VOICE_ERROR_FACE: VOICE_ERROR_EMOTION,
 }
 
 

@@ -42,6 +42,16 @@ def _no_real_face_tracker(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_console_settings(tmp_path):
+    """Never read or write the real data/console-settings.json from tests."""
+    from stackchan_mcp.console_settings import reset_console_settings_for_tests
+
+    reset_console_settings_for_tests(tmp_path / "console-settings.json")
+    yield
+    reset_console_settings_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_debug_status():
     """Keep the process-wide debug snapshot from leaking across tests."""
     from stackchan_mcp.debug_status import reset_debug_status

@@ -17,12 +17,15 @@ from aiohttp import web
 from aiohttp.web_log import AccessLogger
 
 from .capture_server import create_capture_app
+from .console_control import register_console_routes
+from .console_settings import get_console_settings
 from .cloud_proxy import CloudProxy, DEFAULT_CLOUD_URL
 from .device_emotion import IDLE_EMOTION, LISTENING_EMOTION, face_to_device_emotion
 from .demo_reactions import DemoReactions
 from .debug_status import get_debug_status
 from .esp32_client import ESP32Manager
 from .face_tracker import FaceTrackerSupervisor
+from .deepseek_voice_proxy import DeepSeekVoiceProxy
 from .gemini_voice_proxy import GeminiVoiceProxy
 from .gbot_voice_proxy import GbotVoiceProxy
 from .idle_behavior import IdleBehavior
@@ -144,9 +147,11 @@ class Gateway:
         )
         # The face tracker runs as long as the gateway does; head follow is on
         # by default and "look at me" / "stop looking" toggle it.
-        self.tracking_bridge.enabled = head_follow_default_enabled()
+        self.tracking_bridge.enabled = bool(get_console_settings().get("head_follow"))
         self.face_tracker = FaceTrackerSupervisor()
         self._last_face_at: float | None = None
+        self._last_detection: dict | None = None
+        self._detection_count = 0
         self.esp32.on_activity = self.idle_behavior.notify_activity
         self.esp32.on_head_command = self.idle_gate.notify_head_command
         self.esp32.on_device_state = self.idle_gate.notify_device_state
@@ -154,11 +159,48 @@ class Gateway:
         self.esp32.on_end_conversation = self._handle_end_conversation
         self._running = False
         self._http_runner: web.AppRunner | None = None
+        get_console_settings().add_listener(self._apply_console_settings)
 
     def _notify_face_detected(self) -> None:
         self._last_face_at = time.time()
         self.idle_gate.notify_face_detected()
         self.face_tracker.notify_face_reported()
+
+    # ---- console control -------------------------------------------------------
+
+    def console_runtime_status(self) -> dict:
+        status = get_debug_status().snapshot()
+        return {
+            "device": status.get("device"),
+            "wake_gate": status.get("wake_gate"),
+            "face_tracking": self.face_tracking_status(),
+        }
+
+    async def console_wake_now(self) -> bool:
+        proxy = self._active_voice_proxy()
+        wake = getattr(proxy, "wake_now", None)
+        return bool(await wake()) if callable(wake) else False
+
+    async def console_say(self, text: str) -> bool:
+        proxy = self._active_voice_proxy()
+        bridge = getattr(proxy, "_bridge", None)
+        inject = getattr(bridge, "inject_user_text", None)
+        return bool(await inject(text)) if callable(inject) else False
+
+    def _apply_console_settings(self, changed: dict) -> None:
+        loop = asyncio.get_running_loop()
+        if "face_tracking" in changed:
+            if changed["face_tracking"]:
+                self.face_tracker.start(f"http://127.0.0.1:{self.capture_port}/track", force=True)
+            else:
+                # Stops the tracker process, which releases the Mac camera.
+                loop.create_task(self.face_tracker.stop())
+        if "head_follow" in changed:
+            self.tracking_bridge.enabled = bool(changed["head_follow"])
+        proxy = self._active_voice_proxy()
+        apply = getattr(proxy, "apply_console_settings", None)
+        if callable(apply):
+            apply(changed)
 
     def face_tracking_status(self) -> dict:
         """The "face_tracking" section of /debug/status."""
@@ -171,6 +213,9 @@ class Gateway:
             # idle: following; working: the robot is speaking; quiet: it is
             # listening after the wake word. The head holds still in both.
             "mode": self.tracking_bridge.mode,
+            # Only the face box ever leaves the tracker; frames stay in its memory.
+            "last_detection": self._last_detection,
+            "detections": self._detection_count,
         }
 
     def _active_voice_proxy(self):
@@ -255,8 +300,12 @@ class Gateway:
         need a forward reference at __init__ time.
         """
         backend = self.voice_backend
-        if backend in {"gemini", "gbot"}:
-            proxy_class = GbotVoiceProxy if backend == "gbot" else GeminiVoiceProxy
+        if backend in {"gemini", "gbot", "deepseek"}:
+            proxy_class = {
+                "gemini": GeminiVoiceProxy,
+                "gbot": GbotVoiceProxy,
+                "deepseek": DeepSeekVoiceProxy,
+            }[backend]
             return proxy_class(
                 esp32_ref=lambda: self.esp32,
                 voice_bridge=self.voice_input_bridge,
@@ -370,6 +419,7 @@ class Gateway:
             inject_text_handler=self._inject_debug_text,
         )
         app.router.add_post("/track", self._handle_track)
+        register_console_routes(app, self)
         app.router.add_post("/demo/intro", self._handle_demo_intro)
         app.router.add_get("/demo/intro", self._handle_demo_intro)
         app.router.add_post("/demo/arm", self._handle_demo_arm)
@@ -388,8 +438,12 @@ class Gateway:
             host, ws_port, host, capture_port, self.vision_url,
             self.voice_proxy_url if self.voice_backend == "xiaozhi" else self.voice_backend,
         )
-        # /track is up; now launch the face tracker that posts to it.
-        self.face_tracker.start(f"http://127.0.0.1:{capture_port}/track")
+        # /track is up; now launch the face tracker that posts to it, unless
+        # the console switched the camera off.
+        if get_console_settings().get("face_tracking"):
+            self.face_tracker.start(f"http://127.0.0.1:{capture_port}/track")
+        else:
+            logger.info("face tracker off (console setting); the Mac camera stays unused")
 
     async def _handle_track(self, request: web.Request) -> web.Response:
         """Forward face-detection JSON from Vision Tracker to TrackingBridge.
@@ -403,6 +457,12 @@ class Gateway:
             detection = await request.json()
         except Exception:
             return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+        if isinstance(detection, dict):
+            self._detection_count += 1
+            self._last_detection = {
+                key: detection.get(key)
+                for key in ("x", "y", "width", "height", "confidence", "timestamp")
+            }
         try:
             moved = await self.tracking_bridge.handle_detection(detection)
         except Exception as exc:

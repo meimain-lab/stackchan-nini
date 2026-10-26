@@ -99,10 +99,11 @@ class FaceTrackerSupervisor:
     def notify_face_reported(self) -> None:
         self._face_reported = True
 
-    def start(self, endpoint: str) -> None:
+    def start(self, endpoint: str, *, force: bool = False) -> None:
+        """Launch the tracker; ``force`` skips the env autostart check (console switch)."""
         if self._task is not None and not self._task.done():
             return
-        if not autostart_enabled():
+        if not force and not autostart_enabled():
             logger.info("face tracker autostart disabled by STACKCHAN_FACE_TRACKER_AUTOSTART")
             return
         self._task = asyncio.create_task(
